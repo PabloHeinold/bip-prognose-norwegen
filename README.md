@@ -13,11 +13,11 @@ und Arbeitsmarkt.
 > Vollständig in **R / R Markdown** umgesetzt und reproduzierbar.
 
 📄 **Der fertige Bericht (4 Seiten, PDF):** [bericht.pdf](bericht.pdf)
-📊 **Präsentationsfolien:** [praesentation.pptx](praesentation.pptx)
+📊 **Präsentationsfolien (PDF-Vorschau):** [praesentation.pdf](praesentation.pdf) · [.pptx zum Download](praesentation.pptx)
 
 ---
 
-## Worum geht es?
+## Ziel der Arbeit
 
 Ziel ist eine echte Out-of-Sample-Prognose: Die Modelle werden auf den Jahren **1991–2017**
 trainiert und auf den **ungesehenen Jahren 2018–2024** getestet. So lässt sich messen, wie gut
@@ -49,7 +49,8 @@ ein Modell *wirklich* vorhersagt – und nicht nur, wie gut es vergangene Daten 
 |---|---|
 | [`zeitreihen_analyse.Rmd`](zeitreihen_analyse.Rmd) | kompletter Analyse-Code (R Markdown) |
 | [`bericht.pdf`](bericht.pdf) | gerenderter Bericht |
-| [`praesentation.pptx`](praesentation.pptx) | Präsentationsfolien |
+| [`praesentation.pdf`](praesentation.pdf) | Präsentationsfolien (im Browser ansehbar) |
+| [`praesentation.pptx`](praesentation.pptx) | Präsentationsfolien (PowerPoint-Datei) |
 | `bip_wachstum.csv` | Rohdaten BIP-Wachstum (World Bank) |
 | `bip_niveau.csv` | Rohdaten BIP-Niveau (World Bank) |
 | `arbeitslosenquote.csv` | Rohdaten Arbeitslosenquote (World Bank) |
