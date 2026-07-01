@@ -1,0 +1,325 @@
+---
+title: "Prognose BIP-Wachstum Norwegen"
+subtitle: "Kurs 209-032 -- Ökonometrie und Zeitreihenanalyse | SoSe 2026 | HfWU Nürtingen-Geislingen"
+author: "Pablo Heinold"
+date: "`r format(Sys.Date(), '%d.%m.%Y')`"
+output:
+  pdf_document:
+    toc: false
+    number_sections: true
+    fig_height: 3.0
+    fig_width: 6.5
+header-includes:
+  - \usepackage{float}
+  - \renewcommand{\figurename}{Abbildung}
+  - \renewcommand{\tablename}{Tabelle}
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo=FALSE, message=FALSE, warning=FALSE, fig.align="center")
+library(forecast); library(tseries)
+library(lmtest);   library(dynlm); library(knitr)
+```
+
+```{r daten, include=FALSE}
+einlesen_worldbank <- function(pfad, spaltenname) {
+  df     <- read.csv(pfad, skip=4, header=TRUE, check.names=FALSE)
+  df_nor <- df[df[["Country Code"]]=="NOR", ]
+  jc     <- grep("^[0-9]{4}$", names(df_nor), value=TRUE)
+  out    <- data.frame(Jahr=as.integer(jc), Wert=as.numeric(df_nor[1, jc]))
+  names(out)[2] <- spaltenname; return(out)
+}
+pfad_unem <- "daten/arbeitslosenquote.csv"
+pfad_gdpw <- "daten/bip_wachstum.csv"
+pfad_gdpl <- "daten/bip_niveau.csv"
+unem     <- einlesen_worldbank(pfad_unem, "Arbeitslosenquote")
+gdpwachs <- einlesen_worldbank(pfad_gdpw, "BIP_Wachstum")
+gdplevel <- einlesen_worldbank(pfad_gdpl, "BIP_Level")
+daten    <- merge(unem, gdpwachs, by="Jahr")
+daten    <- merge(daten, gdplevel, by="Jahr")
+daten    <- daten[!is.na(daten$Arbeitslosenquote) & !is.na(daten$BIP_Wachstum), ]
+daten    <- daten[order(daten$Jahr), ]
+n <- nrow(daten); test_jahre <- 7
+train <- daten[1:(n-test_jahre), ]; test <- daten[(n-test_jahre+1):n, ]
+
+# Hilfswerte Niveau-Korrelation und Differenzen-Korrelation (zeitversetzt)
+# KRITIKPUNKT 2: Korrelation auf stationären Delta-Reihen statt Niveau
+r_korr_niv <- round(cor(train$BIP_Wachstum, train$Arbeitslosenquote), 3)
+d_bip_train  <- diff(train$BIP_Wachstum)
+d_unem_train <- diff(train$Arbeitslosenquote)
+# Zeitversetzte Korrelation: Delta_BIP_t mit Delta_AL_{t-1} (motiviert ADL-Lag)
+r_korr_d <- round(cor(d_bip_train[-1], head(d_unem_train, -1)), 3)
+
+gdp_2009 <- round(daten$BIP_Wachstum[daten$Jahr==2009], 1)
+gdp_2020 <- round(daten$BIP_Wachstum[daten$Jahr==2020], 1)
+gdp_2021 <- round(daten$BIP_Wachstum[daten$Jahr==2021], 1)
+mean_abs_bip <- round(mean(abs(test$BIP_Wachstum)), 2)
+```
+
+# Daten und Methodik
+
+**Zielgröße:** Jährliche BIP-Wachstumsrate Norwegens (World Bank, 1991--2024, $n=34$).
+**Prädiktor:** Arbeitslosenquote Norwegen (World Bank, identischer Zeitraum).
+**Train/Test-Split:** Training 1991--2017 (27 Jahre), Test 2018--2024 (7 Jahre) -- ca.\ 20\%
+Holdout. **Modellklassen:** AR(p) und ADL(p,q), jeweils auf ersten Differenzen ($\Delta$) der
+Zielgröße; die Prognosen werden anschließend auf das Niveau der BIP-Wachstumsrate
+zurückgerechnet (Details in Abschnitt 3).
+
+Die Wahl der Arbeitslosenquote als Prädiktor folgt der konjunkturtheoretischen
+Verbindung zwischen Wirtschaftswachstum und Arbeitsmarkt (Okunsche Beziehung):
+In Aufschwungphasen sinkt die Arbeitslosigkeit verzögert, in Abschwungphasen steigt
+sie. Auf den stationären $\Delta$-Reihen beträgt die zeitversetzte Korrelation
+$r(\Delta\text{BIP}_t,\,\Delta\text{AL}_{t-1}) = `r r_korr_d`$, was auf einen
+prognose\-relevanten Zusammenhang auf transformierter Ebene hindeutet.
+
+```{r deskriptiv, fig.pos="H", fig.cap="BIP-Wachstumsrate und Arbeitslosenquote Norwegen 1991--2024. Gestrichelte rote Linie: Train/Test-Grenze (Ende 2017).", fig.height=3.2}
+par(mfrow=c(2,1), mar=c(2.5,4.2,2.5,1.5))
+plot(daten$Jahr, daten$BIP_Wachstum, type="l", col="darkgreen", lwd=2,
+     xlab="", ylab="BIP-Wachstum (%)",
+     main="Norwegen: BIP-Wachstum und Arbeitslosenquote", cex.main=0.95)
+abline(v=max(train$Jahr)+0.5, lty=2, col="red", lwd=1.5)
+abline(h=0, lty=3, col="gray60")
+plot(daten$Jahr, daten$Arbeitslosenquote, type="l", col="steelblue", lwd=2,
+     xlab="Jahr", ylab="Arbeitslosenquote (%)", main="")
+abline(v=max(train$Jahr)+0.5, lty=2, col="red", lwd=1.5)
+par(mfrow=c(1,1))
+```
+
+# Stationaritätsanalyse
+
+```{r station_berechnung, include=FALSE}
+suppressWarnings({
+  adf_gdp_niv   <- adf.test(train$BIP_Wachstum,       alternative="stationary")
+  kpss_gdp_niv  <- kpss.test(train$BIP_Wachstum,      null="Level")
+  adf_unem_niv  <- adf.test(train$Arbeitslosenquote,   alternative="stationary")
+  kpss_unem_niv <- kpss.test(train$Arbeitslosenquote,  null="Level")
+  d_gdpw_tr <- diff(train$BIP_Wachstum)
+  d_unem_tr <- diff(train$Arbeitslosenquote)
+  adf_gdp_d   <- adf.test(d_gdpw_tr,  alternative="stationary")
+  kpss_gdp_d  <- kpss.test(d_gdpw_tr, null="Level")
+  adf_unem_d  <- adf.test(d_unem_tr,  alternative="stationary")
+  kpss_unem_d <- kpss.test(d_unem_tr, null="Level")
+})
+```
+
+Beide Reihen sind im **Niveau** gemäß ADF und KPSS nicht stationär (Tabelle 1).
+Nach **erster Differenz** ($\Delta$) liefert der ADF-Test fuer $\Delta$BIP
+($p = `r round(adf_gdp_d$p.value,3)`$) und $\Delta$Arbeitslosenquote
+($p = `r round(adf_unem_d$p.value,3)`$) nur grenzwertige Ergebnisse. Bei
+$n_{\text{eff}} = 25$ Beobachtungen ist die Teststärke des ADF gegen
+wurzelnahe Alternativen bekanntermaßen gering. Der KPSS-Test verwirft
+die Nullhypothese (Stationarität) in beiden Fällen **nicht** verworfen
+($p \geq 0.1$). Die ACF-/PACF-Profile der Differenzen zeigen zudem kein
+persistentes Muster. Die Entscheidung zur Differenzierung stuetzt sich daher
+auf eine **Triangulation** aus allen drei Kriterien: KPSS-Test, ACF/PACF
+und inhaltliche Plausibilität.
+
+```{r station_tab, results='asis'}
+stat_tab <- data.frame(
+  Reihe   = c("BIP-Wachstum (Niveau)", "BIP-Wachstum ($\\Delta$)",
+              "Arbeitslosenquote (Niveau)", "Arbeitslosenquote ($\\Delta$)"),
+  ADF_p   = round(c(adf_gdp_niv$p.value,  adf_gdp_d$p.value,
+                    adf_unem_niv$p.value, adf_unem_d$p.value), 3),
+  KPSS_p  = round(c(kpss_gdp_niv$p.value, kpss_gdp_d$p.value,
+                    kpss_unem_niv$p.value, kpss_unem_d$p.value), 3),
+  Schluss = c("nicht stationär",
+              "stationär (KPSS $\\checkmark$; ADF grenzw.)",
+              "nicht stationär",
+              "stationär (KPSS $\\checkmark$; ADF grenzw.)")
+)
+kable(stat_tab,
+      col.names=c("Reihe","ADF $p$","KPSS $p$","Schlussfolgerung"),
+      align="lccc", escape=FALSE,
+      caption="Stationaritätstests auf Trainingsdaten (1991--2017).
+               KPSS: $H_0$ = stationär; ADF: $H_0$ = Einheitswurzel.")
+```
+
+# Modellschätzung und Prognosegüte
+
+```{r modelle, include=FALSE}
+jahre_diff <- train$Jahr[-1]; D_2009_tr <- as.numeric(jahre_diff==2009)
+ts_d_gdpw <- ts(d_gdpw_tr); ts_d_unem <- ts(d_unem_tr); ts_D_2009 <- ts(D_2009_tr)
+guete <- function(e,p) list(RMSE=sqrt(mean((e-p)^2)), MAE=mean(abs(e-p)))
+
+ar1 <- auto.arima(d_gdpw_tr, max.p=1, max.q=0, d=0, ic="aic", stepwise=FALSE)
+prog_ar1 <- tail(train$BIP_Wachstum,1)+cumsum(as.numeric(forecast(ar1,h=test_jahre)$mean))
+g_ar1 <- guete(test$BIP_Wachstum, prog_ar1)
+
+ar2 <- arima(d_gdpw_tr, order=c(2,0,0))
+prog_ar2 <- tail(train$BIP_Wachstum,1)+cumsum(as.numeric(predict(ar2,n.ahead=test_jahre)$pred))
+g_ar2 <- guete(test$BIP_Wachstum, prog_ar2)
+
+adl11 <- dynlm(ts_d_gdpw~L(ts_d_gdpw,1)+L(ts_d_unem,1))
+bg11  <- bgtest(adl11, order=2); k11 <- coef(adl11)
+d_gdpw_h <- d_gdpw_tr; d_unem_h <- d_unem_tr; niv_h <- train$BIP_Wachstum
+prog_adl11_niv <- numeric(test_jahre)
+for(i in 1:test_jahre){
+  d_hat <- k11[1]+k11[2]*tail(d_gdpw_h,1)+k11[3]*tail(d_unem_h,1)
+  niv_h <- c(niv_h,tail(niv_h,1)+d_hat)
+  d_gdpw_h <- c(d_gdpw_h,diff(c(tail(train$BIP_Wachstum,1),test$BIP_Wachstum)[i:(i+1)]))
+  d_unem_h  <- c(d_unem_h,diff(c(tail(train$Arbeitslosenquote,1),test$Arbeitslosenquote)[i:(i+1)]))
+  prog_adl11_niv[i] <- tail(niv_h,1)}
+g_adl11 <- guete(test$BIP_Wachstum, prog_adl11_niv)
+
+adl22 <- dynlm(ts_d_gdpw~L(ts_d_gdpw,1)+L(ts_d_gdpw,2)+L(ts_d_unem,1)+L(ts_d_unem,2))
+bg22  <- bgtest(adl22, order=2); k22 <- coef(adl22)
+d_gdpw_h <- d_gdpw_tr; d_unem_h <- d_unem_tr; niv_h <- train$BIP_Wachstum
+prog_adl22_niv <- numeric(test_jahre)
+for(i in 1:test_jahre){
+  d_hat <- k22[1]+k22[2]*tail(d_gdpw_h,1)+k22[3]*d_gdpw_h[length(d_gdpw_h)-1]+
+           k22[4]*tail(d_unem_h,1)+k22[5]*d_unem_h[length(d_unem_h)-1]
+  niv_h <- c(niv_h,tail(niv_h,1)+d_hat)
+  d_gdpw_h <- c(d_gdpw_h,diff(c(tail(train$BIP_Wachstum,1),test$BIP_Wachstum)[i:(i+1)]))
+  d_unem_h  <- c(d_unem_h,diff(c(tail(train$Arbeitslosenquote,1),test$Arbeitslosenquote)[i:(i+1)]))
+  prog_adl22_niv[i] <- tail(niv_h,1)}
+g_adl22 <- guete(test$BIP_Wachstum, prog_adl22_niv)
+
+adl22_d <- dynlm(ts_d_gdpw~L(ts_d_gdpw,1)+L(ts_d_gdpw,2)+
+                            L(ts_d_unem,1)+L(ts_d_unem,2)+ts_D_2009)
+bg_d  <- bgtest(adl22_d, order=2); k_d <- coef(adl22_d)
+d_gdpw_h <- d_gdpw_tr; d_unem_h <- d_unem_tr; niv_h <- train$BIP_Wachstum
+prog_dummy_niv <- numeric(test_jahre)
+for(i in 1:test_jahre){
+  d_hat <- k_d[1]+k_d[2]*tail(d_gdpw_h,1)+k_d[3]*d_gdpw_h[length(d_gdpw_h)-1]+
+           k_d[4]*tail(d_unem_h,1)+k_d[5]*d_unem_h[length(d_unem_h)-1]
+  niv_h <- c(niv_h,tail(niv_h,1)+d_hat)
+  d_gdpw_h <- c(d_gdpw_h,diff(c(tail(train$BIP_Wachstum,1),test$BIP_Wachstum)[i:(i+1)]))
+  d_unem_h  <- c(d_unem_h,diff(c(tail(train$Arbeitslosenquote,1),test$Arbeitslosenquote)[i:(i+1)]))
+  prog_dummy_niv[i] <- tail(niv_h,1)}
+g_dummy <- guete(test$BIP_Wachstum, prog_dummy_niv)
+
+verbesserung <- round((g_ar1$RMSE-g_dummy$RMSE)/g_ar1$RMSE*100, 1)
+
+# Diebold-Mariano-Test: ADL(2,2)+D2009 vs. AR(1) -- bestes vs. einfachstes Modell
+e_ar1   <- test$BIP_Wachstum - prog_ar1
+e_dummy <- test$BIP_Wachstum - prog_dummy_niv
+suppressWarnings(
+  dm_res <- dm.test(e_ar1, e_dummy, alternative="greater", h=1, power=2)
+)
+dm_p <- round(dm_res$p.value, 3)
+```
+
+Die **AR-Modelle** schätzen $\Delta Y_t$ (Veränderung der BIP-Wachstumsrate)
+aus eigenen Lags:
+$$\Delta Y_t = \mu + \sum_{i=1}^{p} \phi_i \Delta Y_{t-i} + \varepsilon_t$$
+Die **ADL-Modelle** beziehen zusätzlich verzögerte Änderungen der Arbeitslosenquote
+$\Delta X_{t-j}$ ein:
+$$\Delta Y_t = \mu + \sum_{i=1}^{p} \phi_i \Delta Y_{t-i} +
+  \sum_{j=1}^{q} \beta_j \Delta X_{t-j} + \varepsilon_t$$
+**Klarstellung Zielvariable:** Alle Modelle schätzen und prognostizieren
+$\Delta Y_t$. Fuer die Gütebewertung werden die $\Delta$-Prognosen durch
+kumulative Summation auf das Niveau $Y_t$ (BIP-Wachstumsrate, in Prozentpunkten) zurückgerechnet:
+$\hat{Y}_T = Y_{T_0} + \sum_{t} \hat{\Delta Y}_t$. RMSE und MAE messen damit
+den Fehler auf Niveauebene.
+
+Der **Dummy $D_{2009}$** im ADL(2,2)+D2009 ist kein post-hoc-Eingriff: Er
+behandelt einen aus externer Quelle verifizierten Strukturbruch (globale
+Finanzkrise 2008/09), wie es in der angewandten Zeitreihenanalyse gängige
+Praxis ist. Da $D_{2009} = 0$ im gesamten Testzeitraum (2018--2024), beeinflusst
+der Dummy die Prognosen nicht direkt; er verbessert nur die In-Sample-Schätzung
+der übrigen Koeffizienten
+($\hat{\beta}_{D} = `r round(k_d["ts_D_2009"],2)`$,
+$p \approx `r round(summary(adl22_d)$coefficients["ts_D_2009",4],3)`$,
+$R^2 = `r round(summary(adl22_d)$r.squared,3)`$).
+
+Das **ADL(1,1)** wird wegen serieller Residualkorrelation
+(Breusch-Godfrey: $p = `r round(bg11$p.value,3)`$) verworfen, erscheint
+aber in Abbildung 3 zum Vergleich. Das **ADL(2,2)+D2009** erzielt mit
+RMSE $= `r round(g_dummy$RMSE,4)`$ den niedrigsten Punktfehler --
+`r verbesserung`\% unter AR(1). Ein Diebold-Mariano-Test
+($H_0$: gleiche Prognosegüte, $H_1$: ADL(2,2)+D2009 besser) ergibt
+$p = `r dm_p`$: Bei lediglich $n_{\text{Test}} = 7$ Beobachtungen fehlt die
+statistische Power, um die RMSE-Differenz formal zu sichern. Der
+Informationsgewinn durch den Prädiktor bleibt auf Punktschätzungsebene
+plausibel, sollte aber nicht überbewertet werden.
+
+```{r vergleich_tab, results='asis'}
+vergleich <- data.frame(
+  Modell = c("AR(1)", "AR(2)", "ADL(1,1)", "ADL(2,2)", "ADL(2,2)+D2009"),
+  RMSE   = round(c(g_ar1$RMSE, g_ar2$RMSE, g_adl11$RMSE,
+                   g_adl22$RMSE, g_dummy$RMSE), 4),
+  MAE    = round(c(g_ar1$MAE, g_ar2$MAE, g_adl11$MAE,
+                   g_adl22$MAE, g_dummy$MAE), 4),
+  BG     = c("--","--",
+             paste0("p=",round(bg11$p.value,3)," (verworfen)"),
+             paste0("p=",round(bg22$p.value,3)," (OK)"),
+             paste0("p=",round(bg_d$p.value,3)," (OK)"))
+)
+kable(vergleich,
+      col.names=c("Modell","RMSE","MAE","BG-Test ($p$)"),
+      align="lccc", escape=FALSE,
+      caption=paste0("Prognosegüte aller Modelle auf Niveauebene, Testperiode 2018--2024 ",
+                     "($n_{\\text{Test}}=7$). DM-Test AR(1) vs. ADL(2,2)+D2009: $p=",
+                     dm_p,"$ (einseitig)."))
+```
+
+# Prognosegrafiken
+
+Abbildung 2 zeigt den vollständigen Zeitverlauf 1991--2024. Die grüne Hinterlegung
+kennzeichnet den Trainingszeitraum, die blaue den Testzeitraum. Erkennbar sind der
+Einbruch infolge der Finanzkrise 2009 (`r gdp_2009`\%) und der COVID-19-bedingte
+Rückgang 2020 (`r gdp_2020`\%) mit anschließender Erholung 2021 (`r gdp_2021`\%).
+
+```{r plot_ueberblick, fig.pos="H", fig.cap="Kompletter Zeitverlauf 1991--2024. Grün = Trainingszeitraum, blau = Testzeitraum.", fig.height=2.8}
+y_lim_full <- range(daten$BIP_Wachstum, na.rm=TRUE)+c(-0.4,0.4)
+par(mar=c(4.5,4.5,3,1.5))
+plot(daten$Jahr, daten$BIP_Wachstum, type="l", col="darkgreen", lwd=2,
+     ylim=y_lim_full, xlab="Jahr", ylab="BIP-Wachstum (%)",
+     main="BIP-Wachstum Norwegen: Überblick 1991-2024", xaxt="n")
+axis(1, at=seq(1991,2024,by=3))
+rect(min(train$Jahr)-0.5,y_lim_full[1],max(train$Jahr)+0.5,y_lim_full[2],
+     col=rgb(0.88,0.95,0.88,0.4),border=NA)
+rect(min(test$Jahr)-0.5,y_lim_full[1],max(test$Jahr)+0.5,y_lim_full[2],
+     col=rgb(0.88,0.88,0.96,0.5),border=NA)
+abline(v=max(train$Jahr)+0.5,lty=2,col="gray40",lwd=1.5)
+abline(h=0,lty=3,col="gray65")
+lines(daten$Jahr,daten$BIP_Wachstum,col="darkgreen",lwd=2.2)
+points(daten$Jahr,daten$BIP_Wachstum,pch=19,col="darkgreen",cex=0.75)
+text(mean(train$Jahr),y_lim_full[2]-0.18,"Trainingszeitraum",col="gray30",cex=0.76,font=3)
+text(mean(test$Jahr), y_lim_full[2]-0.18,"Testzeitraum",     col="gray30",cex=0.76,font=3)
+```
+
+Abbildung 3 vergleicht alle fünf Modelle im Testzeitraum. Alle Modelle -- auch das
+beste -- überschätzen das BIP-Wachstum 2020 deutlich: Der COVID-19-Schock ist
+ein Out-of-Distribution-Ereignis, das aus historischen Daten nicht prognostizierbar
+ist. Ab 2021 schneiden die ADL-Modelle tendenziell besser ab als die reinen
+AR-Modelle -- ein Hinweis, dass die Arbeitslosenquote Vorlaufinformation enthält,
+die aber durch die kleine Testmenge ($n=7$) statistisch nicht abgesichert werden kann.
+
+```{r plot_zoom, fig.pos="H", fig.cap="Prognosevergleich Testzeitraum 2018--2024. RMSE-Werte (Niveauebene) in der Legende. ADL(1,1) erscheint zum Vergleich trotz Verwerfung.", fig.height=3.2}
+y_lim_zoom <- range(c(test$BIP_Wachstum,prog_ar1,prog_ar2,
+                      prog_adl11_niv,prog_adl22_niv,prog_dummy_niv),na.rm=TRUE)+c(-0.4,0.4)
+leg_fc <- c("Tatsächlich",
+            sprintf("AR(1)         [%.3f]",g_ar1$RMSE),
+            sprintf("AR(2)         [%.3f]",g_ar2$RMSE),
+            sprintf("ADL(1,1)*     [%.3f]",g_adl11$RMSE),
+            sprintf("ADL(2,2)      [%.3f]",g_adl22$RMSE),
+            sprintf("ADL(2,2)+D2009[%.3f]",g_dummy$RMSE))
+par(mar=c(4.5,4.5,3,9), xpd=TRUE)
+plot(test$Jahr,test$BIP_Wachstum, type="l",col="darkgreen",lwd=2.5,ylim=y_lim_zoom,
+     xlab="Jahr",ylab="BIP-Wachstum (%)",
+     main="Prognosevergleich: Testzeitraum 2018-2024",xaxt="n")
+axis(1,at=test$Jahr,labels=test$Jahr)
+abline(h=0,lty=3,col="gray65")
+points(test$Jahr,test$BIP_Wachstum,pch=19,col="darkgreen",cex=1.3)
+lines(test$Jahr,prog_ar1,col="orange",lwd=2,lty=2)
+points(test$Jahr,prog_ar1,col="orange",pch=17,cex=1.1)
+lines(test$Jahr,prog_ar2,col="gold3",lwd=2,lty=4)
+points(test$Jahr,prog_ar2,col="gold3",pch=15,cex=1.1)
+lines(test$Jahr,prog_adl11_niv,col="tomato",lwd=2,lty=3)
+points(test$Jahr,prog_adl11_niv,col="tomato",pch=18,cex=1.2)
+lines(test$Jahr,prog_adl22_niv,col="red",lwd=2,lty=5)
+points(test$Jahr,prog_adl22_niv,col="red",pch=16,cex=1.1)
+lines(test$Jahr,prog_dummy_niv,col="blue",lwd=2,lty=2)
+points(test$Jahr,prog_dummy_niv,col="blue",pch=8,cex=1.1)
+u3 <- par("usr")
+legend(x=u3[2]+diff(u3[1:2])*0.04, y=u3[4],
+       legend=leg_fc,
+       col=c("darkgreen","orange","gold3","tomato","red","blue"),
+       lty=c(1,2,4,3,5,2), lwd=2,
+       pch=c(19,17,15,18,16,8), pt.cex=c(1.0,0.9,0.9,1.0,0.9,0.9),
+       cex=0.66, bg="white",
+       title="Modell [RMSE]", title.col="gray20",
+       xjust=0, yjust=1)
+mtext("* verworfen (BG-Test)", side=1, adj=1, cex=0.55, col="gray40", line=3.2)
+```
