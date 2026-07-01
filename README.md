@@ -12,7 +12,8 @@ und Arbeitsmarkt.
 > Studienleistung im Kurs *Ökonometrie und Zeitreihenanalyse* (HfWU Nürtingen-Geislingen, SoSe 2026).
 > Vollständig in **R / R Markdown** umgesetzt und reproduzierbar.
 
-📄 **Der fertige Bericht (4 Seiten, PDF):** [`output/bericht.pdf`](output/bericht.pdf)
+📄 **Der fertige Bericht (4 Seiten, PDF):** [bericht.pdf](bericht.pdf)
+📊 **Präsentationsfolien:** [praesentation.pptx](praesentation.pptx)
 
 ---
 
@@ -42,20 +43,16 @@ ein Modell *wirklich* vorhersagt – und nicht nur, wie gut es vergangene Daten 
   **nicht formal abgesichert** (Diebold-Mariano), und der COVID-19-Einbruch 2020 ist als
   Out-of-Distribution-Schock grundsätzlich nicht prognostizierbar.
 
-## Projektstruktur
+## Dateien im Projekt
 
-```
-bip-prognose-norwegen/
-├── zeitreihen_analyse.Rmd     # kompletter Analyse-Code (R Markdown)
-├── daten/                     # Rohdaten (World Bank, World Development Indicators)
-│   ├── bip_wachstum.csv
-│   ├── bip_niveau.csv
-│   └── arbeitslosenquote.csv
-├── output/
-│   ├── bericht.pdf            # gerenderter Bericht
-│   └── praesentation.pptx     # Präsentationsfolien
-└── README.md
-```
+| Datei | Inhalt |
+|---|---|
+| [`zeitreihen_analyse.Rmd`](zeitreihen_analyse.Rmd) | kompletter Analyse-Code (R Markdown) |
+| [`bericht.pdf`](bericht.pdf) | gerenderter Bericht |
+| [`praesentation.pptx`](praesentation.pptx) | Präsentationsfolien |
+| `bip_wachstum.csv` | Rohdaten BIP-Wachstum (World Bank) |
+| `bip_niveau.csv` | Rohdaten BIP-Niveau (World Bank) |
+| `arbeitslosenquote.csv` | Rohdaten Arbeitslosenquote (World Bank) |
 
 ## Selbst reproduzieren
 
